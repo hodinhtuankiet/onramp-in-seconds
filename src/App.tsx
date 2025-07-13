@@ -24,7 +24,6 @@ export default function App() {
         console.log('✅ Wallet created successfully:', userData)
         setUser(userData)
         localStorage.setItem('lazorkit_user', JSON.stringify(userData))
-        console.log(`🎉 USDC purchase completed for wallet: ${userData.publicKey.slice(0, 8)}...`)
     }
 
     return (

@@ -35,31 +35,37 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
   const [countdown, setCountdown] = useState<number>(5)
   const [passkeyProgress, setPasskeyProgress] = useState<number>(0)
   const [passkeyData, setPasskeyData] = useState<any>(null)
+  const [smartWalletData, setSmartWalletData] = useState<any>(null)
   const [isCreatingPasskey, setIsCreatingPasskey] = useState<boolean>(false)
-  const [passkeyError, setPasskeyError] = useState<string>("")
+  const [isCreatingWallet, setIsCreatingWallet] = useState<boolean>(false)
+  const [error, setError] = useState<string>("")
 
+  // Use Lazorkit's useWallet hook directly
   let walletHook: any = null
-  let hasError = false
+  let hasWalletError = false
 
   try {
     walletHook = useWallet()
   } catch (error) {
-    hasError = true
+    hasWalletError = true
   }
 
+  // Extract methods from wallet hook
   const createPasskeyOnly = walletHook?.createPasskeyOnly
+  const createSmartWalletOnly = walletHook?.createSmartWalletOnly
   const disconnect = walletHook?.disconnect
 
   const handleClose = async () => {
-    if (isCreatingPasskey && step === "passkey") {
+    if ((isCreatingPasskey || isCreatingWallet) && (step === "passkey" || step === "confirming")) {
       try {
         if (disconnect) await disconnect()
       } catch (error) {
-        // Silent fail
+        // Silent disconnect
       }
     }
     setIsCreatingPasskey(false)
-    setPasskeyError("")
+    setIsCreatingWallet(false)
+    setError("")
     onClose()
   }
 
@@ -69,8 +75,10 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
       setCountdown(5)
       setPasskeyProgress(0)
       setPasskeyData(null)
+      setSmartWalletData(null)
       setIsCreatingPasskey(false)
-      setPasskeyError("")
+      setIsCreatingWallet(false)
+      setError("")
       return
     }
 
@@ -78,25 +86,30 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
   }, [isOpen])
 
   const startPasskeyCreation = async () => {
+    if (hasWalletError) {
+      setError('Lazorkit SDK not available')
+      return
+    }
+
     setIsCreatingPasskey(true)
-    setPasskeyError("")
+    setError("")
 
     try {
       await createPasskeyStep()
-      generateQRCode()
+      proceedToQRCode()
     } catch (error: any) {
-      setPasskeyError(error.message || 'Passkey creation failed')
-      setTimeout(() => simulatePasskeyCreation(), 2000)
+      setError(error.message || 'Passkey creation failed')
+      setIsCreatingPasskey(false)
     }
   }
 
   const createPasskeyStep = async () => {
     setStep("passkey")
     setPasskeyProgress(0)
-    setPasskeyError("")
+    setError("")
 
     if (!createPasskeyOnly) {
-      throw new Error('Lazorkit SDK not available - createPasskeyOnly method not found')
+      throw new Error('createPasskeyOnly method not found')
     }
 
     const progressInterval = setInterval(() => {
@@ -111,77 +124,108 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
 
     try {
       const passkeyResponse = await createPasskeyOnly()
+      console.log("Passkey created 2:", passkeyResponse)
       clearInterval(progressInterval)
       setPasskeyProgress(100)
+
       setPasskeyData(passkeyResponse)
       await new Promise(resolve => setTimeout(resolve, 1500))
     } catch (error: any) {
       clearInterval(progressInterval)
-      setPasskeyError(`Real SDK Error: ${error.message}`)
-      throw error
+      throw new Error(`Passkey creation failed: ${error.message}`)
     }
   }
 
-  const simulatePasskeyCreation = async () => {
-    setPasskeyError("Using simulation mode")
-    setStep("passkey")
-    setPasskeyProgress(0)
-
-    const passkeyInterval = setInterval(() => {
-      setPasskeyProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(passkeyInterval)
-
-          const simulatedPasskey = {
-            publicKey: btoa(Array.from({ length: 32 }, () => Math.floor(Math.random() * 256)).toString()),
-            credentialId: `sim_passkey_${Date.now()}`,
-            isCreated: true,
-            connectionType: 'create',
-            timestamp: Date.now()
-          }
-
-          setPasskeyData(simulatedPasskey)
-          setTimeout(() => generateQRCode(), 1000)
-          return 100
-        }
-        return prev + 20
-      })
-    }, 500)
-  }
-
-  const generateQRCode = () => {
+  const proceedToQRCode = () => {
     setIsCreatingPasskey(false)
     setStep("qr")
 
+    // ❌ Remove setTimeout call to createSmartWalletAfterPayment
+    // Auto-proceed to payment confirmation after 3 seconds
     setTimeout(() => {
       setStep("confirming")
       setCountdown(8)
-    }, 10000)
+    }, 8000)
   }
+
+  // ✅ Update the useEffect to handle the timing better
+  useEffect(() => {
+    if (step === "confirming" && passkeyData && !isCreatingWallet && !smartWalletData && !error) {
+      // Add small delay to ensure step transition is complete
+      const timer = setTimeout(() => {
+        createSmartWalletAfterPayment()
+      }, 100)
+
+      return () => clearTimeout(timer)
+    }
+  }, [step, passkeyData, isCreatingWallet, smartWalletData, error])
+
+  const createSmartWalletAfterPayment = async () => {
+    console.log('createSmartWalletAfterPayment called, passkeyData:', passkeyData)
+
+    if (!passkeyData) {
+      setError('No passkey data available')
+      return
+    }
+
+    setIsCreatingWallet(true)
+
+    try {
+      if (!createSmartWalletOnly) {
+        throw new Error('createSmartWalletOnly method not found')
+      }
+      // ✅ Pass only publicKey as parameter
+      const smartWalletResult = await createSmartWalletOnly(passkeyData)
+      console.log("data smart wallet ", smartWalletResult)
+      setSmartWalletData(smartWalletResult)
+      setIsCreatingWallet(false)
+
+    } catch (error: any) {
+      setError(`Smart wallet creation failed: ${error.message}`)
+      setIsCreatingWallet(false)
+    }
+  }
+
+  // Handle smart wallet creation when step changes to confirming
+  useEffect(() => {
+    if (step === "confirming" && passkeyData && !isCreatingWallet && !smartWalletData && !error) {
+      createSmartWalletAfterPayment()
+    }
+  }, [step, passkeyData, isCreatingWallet, smartWalletData, error])
 
   useEffect(() => {
     if (step === "confirming" && countdown > 0) {
       const timer = setTimeout(() => setCountdown(countdown - 1), 1000)
       return () => clearTimeout(timer)
     } else if (step === "confirming" && countdown === 0) {
-      setStep("success")
-      setTimeout(() => {
-        const userData: UserData = {
-          username: `User_${Math.random().toString(36).substr(2, 6)}`,
-          publicKey: passkeyData?.credentialId || `${Math.random().toString(36).substr(2, 44)}`,
-          account: {
-            username: "lazorkit_user",
-            smartWallet: `LZ${Math.random().toString(36).substr(2, 8)}`,
-            credentialId: passkeyData?.credentialId || `cred_${Math.random().toString(36).substr(2, 12)}`,
-            authenticationType: "passkey"
-          },
-          authenticationType: "passkey",
-          balance: Number.parseFloat(amount) || 0,
-        }
-        onComplete(userData)
-      }, 3000)
+      if (smartWalletData) {
+        setStep("success")
+        setTimeout(() => {
+          const finalWalletAddress = smartWalletData?.smartWalletAddress ||
+            smartWalletData?.address ||
+            smartWalletData?.walletAddress ||
+            smartWalletData?.account?.smartWallet
+
+          const userData: UserData = {
+            username: `User_${Math.random().toString(36).substr(2, 6)}`,
+            publicKey: finalWalletAddress,
+            account: {
+              username: "lazorkit_user",
+              smartWallet: finalWalletAddress,
+              credentialId: passkeyData?.credentialId,
+              authenticationType: "passkey",
+              passkeyPublicKey: passkeyData?.publickey || passkeyData?.publicKey,
+              smartWalletData: smartWalletData
+            },
+            authenticationType: "passkey",
+            balance: Number.parseFloat(amount) || 0,
+          }
+
+          onComplete(userData)
+        }, 3000)
+      }
     }
-  }, [step, countdown, amount, onComplete, passkeyData])
+  }, [step, countdown, amount, onComplete, passkeyData, smartWalletData, isCreatingWallet, error])
 
   if (!isOpen) return null
 
@@ -210,6 +254,15 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
         </div>
 
         <div className="p-6">
+          {/* Display SDK error if available */}
+          {hasWalletError && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 mb-4">
+              <div className="text-sm text-red-400 text-center">
+                ❌ Lazorkit SDK not available
+              </div>
+            </div>
+          )}
+
           {step === "passkey" && (
             <div className="text-center space-y-4">
               <div className="w-16 h-16 mx-auto bg-gradient-to-br from-blue-500/10 to-green-500/10 rounded-full flex items-center justify-center border border-blue-500/30 relative">
@@ -227,10 +280,7 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
               <div className="space-y-2">
                 <h4 className="text-xl font-bold text-white">Creating Your Passkey</h4>
                 <p className="text-gray-400 text-sm">
-                  {hasError ?
-                    "Setting up secure authentication (Simulation Mode)" :
-                    "Setting up secure Face ID authentication with Lazorkit"
-                  }
+                  Setting up secure Face ID authentication with Lazorkit
                 </p>
               </div>
 
@@ -239,28 +289,22 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
                   <div className="flex items-center justify-center space-x-2">
                     <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
                     <span className="text-blue-400 text-sm font-medium">
-                      {hasError ? "Creating simulated passkey..." : "Creating secure passkey..."}
+                      Creating secure passkey...
                     </span>
                   </div>
 
                   <div className="space-y-2 text-xs">
                     <div className="flex items-start space-x-2">
                       <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${passkeyProgress > 20 ? 'bg-blue-400 animate-pulse' : 'bg-gray-600'}`}></div>
-                      <span className="text-blue-300">
-                        {hasError ? "Generating test keys" : "Generating cryptographic keys"}
-                      </span>
+                      <span className="text-blue-300">Generating cryptographic keys</span>
                     </div>
                     <div className="flex items-start space-x-2">
                       <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${passkeyProgress > 50 ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`}></div>
-                      <span className="text-green-300">
-                        {hasError ? "Simulating biometric auth" : "Setting up biometric authentication"}
-                      </span>
+                      <span className="text-green-300">Setting up biometric authentication</span>
                     </div>
                     <div className="flex items-start space-x-2">
                       <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${passkeyProgress > 80 ? 'bg-purple-400 animate-pulse' : 'bg-gray-600'}`}></div>
-                      <span className="text-purple-300">
-                        {hasError ? "Creating demo passkey" : "Securing your digital identity"}
-                      </span>
+                      <span className="text-purple-300">Securing your digital identity</span>
                     </div>
                   </div>
 
@@ -277,10 +321,10 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
                 </div>
               </div>
 
-              {passkeyError && (
-                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3">
-                  <div className="text-xs text-yellow-400 text-center">
-                    ⚠️ {passkeyError}
+              {error && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+                  <div className="text-xs text-red-400 text-center">
+                    ❌ {error}
                   </div>
                 </div>
               )}
@@ -289,7 +333,7 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
                 <div className="text-xs text-gray-400 space-y-1">
                   <div className="font-medium text-gray-300 flex items-center justify-center space-x-1">
                     <Shield className="w-3 h-3" />
-                    <span>{hasError ? "Demo Mode:" : "Powered by Lazorkit:"}</span>
+                    <span>Powered by Lazorkit</span>
                   </div>
                 </div>
               </div>
@@ -363,13 +407,6 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
                   Open your banking app and scan this QR code to complete the payment
                 </p>
               </div>
-
-              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3">
-                <div className="flex items-center justify-center space-x-2 text-yellow-400 text-sm">
-                  <Clock className="w-4 h-4" />
-                  <span className="font-medium">This QR code expires in 10 minutes</span>
-                </div>
-              </div>
             </div>
           )}
 
@@ -392,10 +429,32 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
                     <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce delay-100"></div>
                     <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce delay-200"></div>
                   </div>
-                  <div className="text-sm text-blue-300 font-medium">Processing transaction...</div>
+                  <div className="text-sm text-blue-300 font-medium">
+                    {isCreatingWallet ? "Creating your smart wallet..." : "Processing transaction..."}
+                  </div>
                   <div className="mt-3 w-full bg-gray-700/50 rounded-full h-1.5 overflow-hidden">
                     <div className="bg-gradient-to-r from-blue-500 to-purple-500 h-1.5 rounded-full animate-pulse"></div>
                   </div>
+
+                  {/* Smart wallet creation status */}
+                  {isCreatingWallet && (
+                    <div className="mt-3 text-xs text-purple-300">
+                      🏦 Deploying your wallet on Solana blockchain...
+                    </div>
+                  )}
+
+                  {smartWalletData && (
+                    <div className="mt-3 text-xs text-green-300">
+                      ✅ Smart wallet ready
+                    </div>
+                  )}
+
+                  {/* Error display */}
+                  {error && (
+                    <div className="mt-3 text-xs text-red-300">
+                      ❌ {error}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -414,6 +473,9 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
                 <div className="text-green-300 text-sm space-y-1">
                   <div><span className="font-semibold">Amount:</span> ${amount} USDC</div>
                   <div><span className="font-semibold">Status:</span> Confirmed</div>
+                  {smartWalletData && (
+                    <div><span className="font-semibold">Wallet:</span> Created</div>
+                  )}
                 </div>
               </div>
               <div className="flex items-center justify-center space-x-2">

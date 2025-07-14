@@ -442,12 +442,12 @@ export const PurchaseModal: React.FC<PurchaseModalProps> = ({
                       🏦 Deploying your wallet on Solana blockchain...
                     </div>
                   )}
-
+                  {/* 
                   {smartWalletData && (
                     <div className="mt-3 text-xs text-green-300">
                       ✅ Smart wallet ready
                     </div>
-                  )}
+                  )} */}
 
                   {/* Error display */}
                   {error && (
